@@ -3,9 +3,9 @@
 #define PIXEL_PIN   2
 #define NUM_PIXELS  1
 
-#define PLAYPAUSE_PIN 8
-#define FORWARD_PIN   7
-#define BACKWARD_PIN  6
+#define PREV_PIN      8
+#define PLAYPAUSE_PIN 7
+#define NEXT_PIN      6
 #define MUTE_PIN      5
 #define POT_PIN       A7
 
@@ -28,8 +28,8 @@ unsigned long lastVolumeSendTime = 0;
 
 void setup() {
   pinMode(PLAYPAUSE_PIN, INPUT_PULLUP);
-  pinMode(FORWARD_PIN, INPUT_PULLUP);
-  pinMode(BACKWARD_PIN, INPUT_PULLUP);
+  pinMode(NEXT_PIN, INPUT_PULLUP);
+  pinMode(PREV_PIN, INPUT_PULLUP);
   pinMode(MUTE_PIN, INPUT_PULLUP);
 
   pixel.begin();
@@ -57,7 +57,7 @@ void handleButtons() {
   lastPlayPauseButtonState = currentPlayPauseButtonState;
 
   // --- FORWARD ---
-  bool currentForwardButtonState = digitalRead(FORWARD_PIN);
+  bool currentForwardButtonState = digitalRead(NEXT_PIN);
 
   if (lastForwardButtonState == HIGH && currentForwardButtonState == LOW) {
     Serial.println("BTN|NEXT");
@@ -73,7 +73,7 @@ void handleButtons() {
   lastForwardButtonState = currentForwardButtonState;
 
   // --- BACKWARD ---
-  bool currentBackwardButtonState = digitalRead(BACKWARD_PIN);
+  bool currentBackwardButtonState = digitalRead(PREV_PIN);
 
   if (lastBackwardButtonState == HIGH && currentBackwardButtonState == LOW) {
     Serial.println("BTN|PREV");
