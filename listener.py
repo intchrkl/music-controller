@@ -15,6 +15,8 @@ BAUD = 9600
 
 ser = serial.Serial(PORT, BAUD, timeout=1)
 
+last_lcd_payload = None
+
 print("Listening to Serial Monitor...\n")
 if debug:
     print("DEBUG mode on")
@@ -72,7 +74,7 @@ def format_time(seconds: float) -> str:
     secs = total_seconds % 60
     return f"{minutes}:{secs:02d}"
 
-def print_current_track():
+def print_track_terminal():
     info = get_spotify_info()
 
     if info["state"] == "stopped":
@@ -89,21 +91,51 @@ def print_current_track():
         f"Length: {format_time(position_sec)} / {format_time(duration_sec)}\n"
     )
 
+def print_track_lcd(info):
+    global last_lcd_payload
+
+    if info["state"] == "stopped":
+        payload = "LCD|No track|Stopped\n"
+    else:
+        track = (info["track"] or "")
+        artist = (info["artist"] or "")
+        payload = f"LCD|{track}|{artist}\n"
+
+    if payload != last_lcd_payload:
+        ser.write(payload.encode("utf-8"))
+        print("Sent payload: " + payload)
+        last_lcd_payload = payload
+
 def track_info_worker():
     while True:
         command = track_info_queue.get()
         try:
             # small delay so Spotify has time to update after next/prev/playpause
             # time.sleep(0.2)
-            print_current_track()
+            info = get_spotify_info()
+            print_track_terminal()
+            print_track_lcd(info)
         except Exception as e:
             print(f"Track info error: {e}")
         finally:
             track_info_queue.task_done()
 
+def spotify_poll_worker():
+    while True:
+        try:
+            info = get_spotify_info()
+            print_track_lcd(info)
+        except Exception as e:
+            print(f"Polling error: {e}")
+        time.sleep(1)
+        
+
 # Start background worker thread
 worker = threading.Thread(target=track_info_worker, daemon=True)
 worker.start()
+
+poller = threading.Thread(target=spotify_poll_worker, daemon=True)
+poller.start()
 
 while True:
     line = ser.readline().decode('utf-8').strip()
