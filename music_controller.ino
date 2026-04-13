@@ -1,6 +1,11 @@
 #include <Adafruit_NeoPixel.h>
 #include <LiquidCrystal_I2C.h>
 
+#include "USB.h"
+#include "USBHIDConsumerControl.h"
+
+USBHIDConsumerControl Consumer;
+
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 #define PIXEL_PIN   2
@@ -20,12 +25,11 @@ bool lastForwardButtonState   = HIGH;
 bool lastBackwardButtonState  = HIGH;
 bool lastMuteButtonState      = HIGH;
 
-// Potentiometer smoothing / sending
+// Potentiometer smoothing / HID stepping
 float smoothedPotValue = 0.0;
-int lastSentVolume = -1;
+int lastPotStep = -1;
 
 const float alpha = 0.1;
-const int volumeThreshold = 2;
 const unsigned long sendInterval = 50;
 unsigned long lastVolumeSendTime = 0;
 
@@ -41,52 +45,63 @@ String currentArtist = "";
 
 ScreenMode currentScreen = TRACK_SCREEN;
 unsigned long lastVolumeInteractionTime = 0;
-const unsigned long volumeScreenDuration = 1500; // ms to keep volume screen visible
+const unsigned long volumeScreenDuration = 1500;
 
 // LCD screen scrolling
-bool scrollingOn = false;
+bool scrollingOn = true;
 
 int trackScrollIndex = 0;
 int artistScrollIndex = 0;
 
 unsigned long lastScrollTime = 0;
-const unsigned long scrollInterval = 700; // ms (adjust speed)
+const unsigned long scrollInterval = 700;
 unsigned long scrollStartDelay = 2000;
 unsigned long trackDisplayStartTime = 0;
 
 unsigned long scrollPauseUntil = 0;
-const unsigned long loopPause = 2000; // pause 1 second at restart
+const unsigned long loopPause = 2000;
 
-void setup() {
-  pinMode(PLAYPAUSE_PIN, INPUT_PULLUP);
-  pinMode(NEXT_PIN, INPUT_PULLUP);
-  pinMode(PREV_PIN, INPUT_PULLUP);
-  pinMode(MUTE_PIN, INPUT_PULLUP);
-
-  pixel.begin();
-  pixel.clear();
-  pixel.show();
-
-  Serial.begin(9600);
-
-  lcd.init();
-  lcd.backlight();
-  displayTrackLcd();
+// ---------- HID helpers ----------
+void sendConsumerPress(uint16_t key) {
+  Consumer.press(key);
+  delay(5);
+  Consumer.release();
 }
 
+void showVolumeOverlay(int percent) {
+  currentScreen = VOLUME_SCREEN;
+  lastVolumeInteractionTime = millis();
+  displayVolumeLcd(percent);
+}
+
+// ---------- LCD ----------
 void drawProgressBar(int percent) {
   int barWidth = 16;
   int filled = map(percent, 0, 100, 0, barWidth);
 
   lcd.setCursor(0, 1);
-
   for (int i = 0; i < barWidth; i++) {
     if (i < filled) {
-      lcd.write((uint8_t)255);   // full block
+      lcd.write((uint8_t)255);
     } else {
       lcd.print(" ");
     }
   }
+}
+
+String getScrolledText(String text, int index) {
+  if (text.length() <= 16) {
+    return text;
+  }
+
+  String padded = text + "   ";
+  int len = padded.length();
+
+  String result = "";
+  for (int i = 0; i < 16; i++) {
+    result += padded[(index + i) % len];
+  }
+  return result;
 }
 
 void displayTrackLcd() {
@@ -123,30 +138,10 @@ void updateLcdScreen() {
   }
 }
 
-String getScrolledText(String text, int index) {
-  if (text.length() <= 16) {
-    return text;
-  }
-
-  String padded = text + "   "; // spacing between loops
-
-  int len = padded.length();
-
-  String result = "";
-  for (int i = 0; i < 16; i++) {
-    result += padded[(index + i) % len];
-  }
-
-  return result;
-}
-
 void updateScrolling() {
   if (currentScreen != TRACK_SCREEN) return;
   if (millis() - trackDisplayStartTime < scrollStartDelay) return;
-
-  // pause at the start of a new loop
   if (millis() < scrollPauseUntil) return;
-
   if (millis() - lastScrollTime < scrollInterval) return;
 
   bool wrapped = false;
@@ -171,15 +166,16 @@ void updateScrolling() {
   }
 }
 
+// ---------- Buttons ----------
 void handleButtons() {
   bool currentPlayPauseButtonState = digitalRead(PLAYPAUSE_PIN);
-  bool currentForwardButtonState = digitalRead(NEXT_PIN);
-  bool currentBackwardButtonState = digitalRead(PREV_PIN);
-  bool currentMuteButtonState = digitalRead(MUTE_PIN);
+  bool currentForwardButtonState   = digitalRead(NEXT_PIN);
+  bool currentBackwardButtonState  = digitalRead(PREV_PIN);
+  bool currentMuteButtonState      = digitalRead(MUTE_PIN);
 
   // PLAY/PAUSE
   if (lastPlayPauseButtonState == HIGH && currentPlayPauseButtonState == LOW) {
-    Serial.println("BTN|PLAYPAUSE");
+    sendConsumerPress(HID_USAGE_CONSUMER_PLAY_PAUSE);
     pixel.setPixelColor(0, pixel.Color(0, 150, 0));
     pixel.show();
   }
@@ -191,7 +187,7 @@ void handleButtons() {
 
   // NEXT
   if (lastForwardButtonState == HIGH && currentForwardButtonState == LOW) {
-    Serial.println("BTN|NEXT");
+    sendConsumerPress(HID_USAGE_CONSUMER_SCAN_NEXT);
     pixel.setPixelColor(0, pixel.Color(0, 0, 150));
     pixel.show();
   }
@@ -203,7 +199,7 @@ void handleButtons() {
 
   // PREV
   if (lastBackwardButtonState == HIGH && currentBackwardButtonState == LOW) {
-    Serial.println("BTN|PREV");
+    sendConsumerPress(HID_USAGE_CONSUMER_SCAN_PREVIOUS);
     pixel.setPixelColor(0, pixel.Color(150, 0, 0));
     pixel.show();
   }
@@ -215,7 +211,7 @@ void handleButtons() {
 
   // MUTE
   if (lastMuteButtonState == HIGH && currentMuteButtonState == LOW) {
-    Serial.println("BTN|MUTE");
+    sendConsumerPress(HID_USAGE_CONSUMER_MUTE);
     pixel.setPixelColor(0, pixel.Color(150, 150, 0));
     pixel.show();
   }
@@ -226,28 +222,42 @@ void handleButtons() {
   lastMuteButtonState = currentMuteButtonState;
 }
 
+// ---------- Potentiometer -> relative HID volume ----------
 void handleVolume() {
   int rawValue = analogRead(POT_PIN);
 
   smoothedPotValue = alpha * rawValue + (1.0 - alpha) * smoothedPotValue;
   int smoothValue = (int)smoothedPotValue;
 
-  int volume = map(smoothValue, 300, 4075, 0, 100);
-  volume = constrain(volume, 0, 100);
+  // Adjust this range if needed for your board/pot
+  int volumePercent = map(smoothValue, 300, 4075, 0, 100);
+  volumePercent = constrain(volumePercent, 0, 100);
 
-  if (abs(volume - lastSentVolume) >= volumeThreshold) {
-    if (millis() - lastVolumeSendTime >= sendInterval) {
-      Serial.println("VOL|" + String(volume));
-      lastSentVolume = volume;
+  // Convert absolute pot position into coarse steps for HID up/down
+  const int numSteps = 20; // 0..20 steps
+  int currentPotStep = map(volumePercent, 0, 100, 0, numSteps);
+
+  if (lastPotStep == -1) {
+    lastPotStep = currentPotStep;
+    return;
+  }
+
+  if (millis() - lastVolumeSendTime >= sendInterval) {
+    if (currentPotStep > lastPotStep) {
+      sendConsumerPress(HID_USAGE_CONSUMER_VOLUME_INCREMENT);
+      lastPotStep = currentPotStep;
       lastVolumeSendTime = millis();
-
-      currentScreen = VOLUME_SCREEN;
-      lastVolumeInteractionTime = millis();
-      displayVolumeLcd(volume);
+      showVolumeOverlay(volumePercent);
+    } else if (currentPotStep < lastPotStep) {
+      sendConsumerPress(HID_USAGE_CONSUMER_VOLUME_DECREMENT);
+      lastPotStep = currentPotStep;
+      lastVolumeSendTime = millis();
+      showVolumeOverlay(volumePercent);
     }
   }
 }
 
+// ---------- Serial in from Python for LCD only ----------
 void readSerial() {
   while (Serial.available() > 0) {
     char c = Serial.read();
@@ -281,6 +291,7 @@ void handleMessage(String line) {
         artistScrollIndex = 0;
         trackDisplayStartTime = millis();
         lastScrollTime = millis();
+        scrollPauseUntil = 0;
       }
 
       if (currentScreen == TRACK_SCREEN) {
@@ -288,6 +299,26 @@ void handleMessage(String line) {
       }
     }
   }
+}
+
+void setup() {
+  pinMode(PLAYPAUSE_PIN, INPUT_PULLUP);
+  pinMode(NEXT_PIN, INPUT_PULLUP);
+  pinMode(PREV_PIN, INPUT_PULLUP);
+  pinMode(MUTE_PIN, INPUT_PULLUP);
+
+  pixel.begin();
+  pixel.clear();
+  pixel.show();
+
+  Serial.begin(9600);
+
+  USB.begin();
+  Consumer.begin();
+
+  lcd.init();
+  lcd.backlight();
+  displayTrackLcd();
 }
 
 void loop() {
