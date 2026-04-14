@@ -19,6 +19,7 @@ USBHIDConsumerControl Consumer;
 
 #define ENC_A_PIN     A7
 #define ENC_B_PIN     A6
+#define ENC_BTN_PIN   A3
 
 // ---------------- Peripherals ----------------
 Adafruit_NeoPixel pixel(NUM_PIXELS, PIXEL_PIN, NEO_GRB + NEO_KHZ800);
@@ -79,6 +80,7 @@ bool lastPlayPauseButtonState = HIGH;
 bool lastForwardButtonState   = HIGH;
 bool lastBackwardButtonState  = HIGH;
 bool lastMuteButtonState      = HIGH;
+bool lastEncButtonState       = HIGH;
 
 // ---------------- Encoder state ----------------
 int lastEncAState = HIGH;
@@ -107,12 +109,25 @@ const unsigned long volumeScreenDuration = 1500;
 bool scrollingOn = true;
 int trackScrollIndex = 0;
 int artistScrollIndex = 0;
+
 unsigned long lastScrollTime = 0;
 const unsigned long scrollInterval = 700;
-unsigned long scrollStartDelay = 2000;
+const unsigned long scrollStartDelay = 2000;
 unsigned long trackDisplayStartTime = 0;
+
 unsigned long scrollPauseUntil = 0;
 const unsigned long loopPause = 2000;
+
+// ---------- Forward declarations ----------
+void showVolumeOverlay(int percent);
+void displayTrackLcd();
+void displayVolumeLcd(int vol);
+void updateLcdScreen();
+void updateScrolling();
+void handleDisplayPacket(const DisplayPacket& pkt);
+void handleVolumePacket(const VolumePacket& pkt);
+void handleSerialMessage(String line);
+void readSerialDirectMode();
 
 // ---------------- Helpers ----------------
 void sendConsumerPress(uint16_t key) {
@@ -121,6 +136,48 @@ void sendConsumerPress(uint16_t key) {
   Consumer.release();
 }
 
+void sendCommandWireless(uint8_t cmd) {
+  ControlPacket pkt;
+  pkt.packetType = PKT_COMMAND;
+  pkt.command = cmd;
+  esp_now_send(rxMac, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void sendPing() {
+  HandshakePacket pkt;
+  pkt.packetType = PKT_PING;
+  esp_now_send(rxMac, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void handleMediaCommand(uint8_t cmd) {
+  if (currentMode == MODE_WIRELESS) {
+    sendCommandWireless(cmd);
+    return;
+  }
+
+  switch (cmd) {
+    case CMD_PLAY_PAUSE:
+      sendConsumerPress(HID_USAGE_CONSUMER_PLAY_PAUSE);
+      break;
+    case CMD_NEXT:
+      sendConsumerPress(HID_USAGE_CONSUMER_SCAN_NEXT);
+      break;
+    case CMD_PREV:
+      sendConsumerPress(HID_USAGE_CONSUMER_SCAN_PREVIOUS);
+      break;
+    case CMD_MUTE:
+      sendConsumerPress(HID_USAGE_CONSUMER_MUTE);
+      break;
+    case CMD_VOL_UP:
+      sendConsumerPress(HID_USAGE_CONSUMER_VOLUME_INCREMENT);
+      break;
+    case CMD_VOL_DOWN:
+      sendConsumerPress(HID_USAGE_CONSUMER_VOLUME_DECREMENT);
+      break;
+  }
+}
+
+// ---------------- LCD ----------------
 void drawProgressBar(int percent) {
   int barWidth = 16;
   int filled = map(percent, 0, 100, 0, barWidth);
@@ -136,7 +193,9 @@ void drawProgressBar(int percent) {
 }
 
 String getScrolledText(String text, int index) {
-  if (text.length() <= 16) return text;
+  if (text.length() <= 16) {
+    return text;
+  }
 
   String padded = text + "   ";
   int len = padded.length();
@@ -218,52 +277,13 @@ void updateScrolling() {
   }
 }
 
-void sendCommandWireless(uint8_t cmd) {
-  ControlPacket pkt;
-  pkt.packetType = PKT_COMMAND;
-  pkt.command = cmd;
-  esp_now_send(rxMac, (uint8_t*)&pkt, sizeof(pkt));
-}
-
-void sendPing() {
-  HandshakePacket pkt;
-  pkt.packetType = PKT_PING;
-  esp_now_send(rxMac, (uint8_t*)&pkt, sizeof(pkt));
-}
-
-void handleMediaCommand(uint8_t cmd) {
-  if (currentMode == MODE_WIRELESS) {
-    sendCommandWireless(cmd);
-    return;
-  }
-
-  switch (cmd) {
-    case CMD_PLAY_PAUSE:
-      sendConsumerPress(HID_USAGE_CONSUMER_PLAY_PAUSE);
-      break;
-    case CMD_NEXT:
-      sendConsumerPress(HID_USAGE_CONSUMER_SCAN_NEXT);
-      break;
-    case CMD_PREV:
-      sendConsumerPress(HID_USAGE_CONSUMER_SCAN_PREVIOUS);
-      break;
-    case CMD_MUTE:
-      sendConsumerPress(HID_USAGE_CONSUMER_MUTE);
-      break;
-    case CMD_VOL_UP:
-      sendConsumerPress(HID_USAGE_CONSUMER_VOLUME_INCREMENT);
-      break;
-    case CMD_VOL_DOWN:
-      sendConsumerPress(HID_USAGE_CONSUMER_VOLUME_DECREMENT);
-      break;
-  }
-}
-
+// ---------------- Buttons ----------------
 void handleButtons() {
   bool currentPlayPauseButtonState = digitalRead(PLAYPAUSE_PIN);
   bool currentForwardButtonState   = digitalRead(NEXT_PIN);
   bool currentBackwardButtonState  = digitalRead(PREV_PIN);
   bool currentMuteButtonState      = digitalRead(MUTE_PIN);
+  bool currentEncButtonState       = digitalRead(ENC_BTN_PIN);
 
   if (lastPlayPauseButtonState == HIGH && currentPlayPauseButtonState == LOW) {
     handleMediaCommand(CMD_PLAY_PAUSE);
@@ -309,8 +329,21 @@ void handleButtons() {
     pixel.show();
   }
   lastMuteButtonState = currentMuteButtonState;
+
+  if (lastEncButtonState == HIGH && currentEncButtonState == LOW) {
+    handleMediaCommand(CMD_MUTE);
+    pixel.setPixelColor(0, pixel.Color(150, 150, 0));
+    pixel.show();
+    showVolumeOverlay(currentSystemVolumePercent);
+  }
+  if (lastEncButtonState == LOW && currentEncButtonState == HIGH) {
+    pixel.setPixelColor(0, pixel.Color(0, 0, 0));
+    pixel.show();
+  }
+  lastEncButtonState = currentEncButtonState;
 }
 
+// ---------------- Volume ----------------
 void handleVolume() {
   int currentA = digitalRead(ENC_A_PIN);
 
@@ -338,6 +371,7 @@ void handleVolume() {
   lastEncAState = currentA;
 }
 
+// ---------------- Packet handlers ----------------
 void handleDisplayPacket(const DisplayPacket& pkt) {
   String newTrack = String(pkt.track);
   String newArtist = String(pkt.artist);
@@ -367,6 +401,7 @@ void handleVolumePacket(const VolumePacket& pkt) {
   }
 }
 
+// ---------------- Direct-mode serial ----------------
 void handleSerialMessage(String line) {
   if (line.startsWith("LCD|")) {
     int firstSep = line.indexOf('|');
@@ -410,6 +445,7 @@ void readSerialDirectMode() {
   }
 }
 
+// ---------------- ESP-NOW receive ----------------
 // Older ESP32 core callback signature
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
   if (len <= 0) return;
@@ -434,6 +470,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
   }
 }
 
+// ---------------- Setup helpers ----------------
 void setupEspNow() {
   WiFi.mode(WIFI_STA);
 
@@ -478,6 +515,7 @@ void detectMode() {
   currentMode = MODE_DIRECT;
 }
 
+// ---------------- Setup ----------------
 void setup() {
   Serial.begin(115200);
 
@@ -485,6 +523,7 @@ void setup() {
   pinMode(NEXT_PIN, INPUT_PULLUP);
   pinMode(PREV_PIN, INPUT_PULLUP);
   pinMode(MUTE_PIN, INPUT_PULLUP);
+  pinMode(ENC_BTN_PIN, INPUT_PULLUP);
   pinMode(ENC_A_PIN, INPUT_PULLUP);
   pinMode(ENC_B_PIN, INPUT_PULLUP);
 
@@ -498,7 +537,6 @@ void setup() {
 
   lastEncAState = digitalRead(ENC_A_PIN);
 
-  // Start USB so direct mode can work if selected
   USB.begin();
   Consumer.begin();
 
@@ -516,6 +554,7 @@ void setup() {
   }
 }
 
+// ---------------- Loop ----------------
 void loop() {
   handleButtons();
   handleVolume();
