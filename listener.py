@@ -5,7 +5,7 @@ from serial.tools import list_ports
 
 BAUD = 115200
 RECONNECT_DELAY = 2.0
-POLL_INTERVAL = 0.25
+POLL_INTERVAL = 1.0
 
 # Put your most likely ports first
 PREFERRED_PORTS = [
@@ -77,7 +77,7 @@ def build_lcd_payload(info):
 def build_vol_payload(vol: int):
     return f"VOL|{vol}\n"
 
-
+# Returns a list of possible serial ports to try
 def candidate_ports():
     found = [p.device for p in list_ports.comports()]
 
@@ -89,7 +89,6 @@ def candidate_ports():
             seen.add(port)
             ordered.append(port)
 
-    # Prefer usbmodem/cu ports on mac
     ordered.sort(key=lambda p: (
         0 if "usbmodem" in p else 1,
         0 if p.startswith("/dev/cu.") else 1,
@@ -98,7 +97,7 @@ def candidate_ports():
 
     return ordered
 
-
+# Tries to open a specific serial port
 def try_open_port(port: str):
     try:
         s = serial.Serial(port, BAUD, timeout=1, write_timeout=1)
@@ -109,7 +108,7 @@ def try_open_port(port: str):
         print(f"Could not open {port}: {e}")
         return None
 
-
+# Attempts to connect to any available serial port
 def connect_serial():
     ports = candidate_ports()
     print("Trying ports:")

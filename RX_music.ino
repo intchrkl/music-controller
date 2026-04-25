@@ -48,18 +48,21 @@ struct HandshakePacket {
 
 String incomingLine = "";
 
+// Executes the keypress when a button is pressed on the TX
 void sendConsumerPress(uint16_t key) {
   Consumer.press(key);
   delay(5);
   Consumer.release();
 }
 
+// Initial reply to TX to establish connection
 void sendPong() {
   HandshakePacket pkt;
   pkt.packetType = PKT_PONG;
   esp_now_send(txMac, (uint8_t*)&pkt, sizeof(pkt));
 }
 
+// Sends current track commands to TX to display currently playing track on LCD screen
 void sendDisplayPacket(const String& track, const String& artist) {
   DisplayPacket pkt = {};
   pkt.packetType = PKT_LCD;
@@ -70,6 +73,7 @@ void sendDisplayPacket(const String& track, const String& artist) {
   esp_now_send(txMac, (uint8_t*)&pkt, sizeof(pkt));
 }
 
+// Sends volume commands back to TX to display volume levels on LCD screen
 void sendVolumePacket(int vol) {
   VolumePacket pkt;
   pkt.packetType = PKT_VOLUME;
@@ -78,6 +82,7 @@ void sendVolumePacket(int vol) {
   esp_now_send(txMac, (uint8_t*)&pkt, sizeof(pkt));
 }
 
+// Receives LCD commands from python script and forwards to TX
 void handleSerialMessage(String line) {
   if (line.startsWith("LCD|")) {
     int firstSep = line.indexOf('|');
@@ -94,6 +99,7 @@ void handleSerialMessage(String line) {
   }
 }
 
+// Parses serial port
 void readSerial() {
   while (Serial.available() > 0) {
     char c = Serial.read();

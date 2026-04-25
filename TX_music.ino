@@ -118,7 +118,6 @@ unsigned long trackDisplayStartTime = 0;
 unsigned long scrollPauseUntil = 0;
 const unsigned long loopPause = 2000;
 
-// ---------- Forward declarations ----------
 void showVolumeOverlay(int percent);
 void displayTrackLcd();
 void displayVolumeLcd(int vol);
@@ -129,13 +128,14 @@ void handleVolumePacket(const VolumePacket& pkt);
 void handleSerialMessage(String line);
 void readSerialDirectMode();
 
-// ---------------- Helpers ----------------
+// Executes the keypress
 void sendConsumerPress(uint16_t key) {
   Consumer.press(key);
   delay(5);
   Consumer.release();
 }
 
+// Sends command to RX to execute
 void sendCommandWireless(uint8_t cmd) {
   ControlPacket pkt;
   pkt.packetType = PKT_COMMAND;
@@ -143,12 +143,14 @@ void sendCommandWireless(uint8_t cmd) {
   esp_now_send(rxMac, (uint8_t*)&pkt, sizeof(pkt));
 }
 
+// Send ping to try to establish connection with RX
 void sendPing() {
   HandshakePacket pkt;
   pkt.packetType = PKT_PING;
   esp_now_send(rxMac, (uint8_t*)&pkt, sizeof(pkt));
 }
 
+// Processes key presses and sends to either RX or to computer directly
 void handleMediaCommand(uint8_t cmd) {
   if (currentMode == MODE_WIRELESS) {
     sendCommandWireless(cmd);
@@ -177,7 +179,7 @@ void handleMediaCommand(uint8_t cmd) {
   }
 }
 
-// ---------------- LCD ----------------
+// Draws progress bar on LCD screen for volume level
 void drawProgressBar(int percent) {
   int barWidth = 16;
   int filled = map(percent, 0, 100, 0, barWidth);
@@ -207,6 +209,7 @@ String getScrolledText(String text, int index) {
   return result;
 }
 
+// Displays currently playing track
 void displayTrackLcd() {
   lcd.clear();
 
@@ -223,6 +226,7 @@ void displayTrackLcd() {
   lcd.print(getScrolledText(currentArtist, artistScrollIndex));
 }
 
+// Displays volume levels
 void displayVolumeLcd(int vol) {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -232,12 +236,14 @@ void displayVolumeLcd(int vol) {
   drawProgressBar(vol);
 }
 
+// Switches to the volume screen to show current volume level when an adjustment is made 
 void showVolumeOverlay(int percent) {
   currentScreen = VOLUME_SCREEN;
   lastVolumeInteractionTime = millis();
   displayVolumeLcd(percent);
 }
 
+// Updates the current screen on the LCD between the currently playing track and volume level
 void updateLcdScreen() {
   if (currentScreen == VOLUME_SCREEN) {
     if (millis() - lastVolumeInteractionTime >= volumeScreenDuration) {
@@ -249,6 +255,7 @@ void updateLcdScreen() {
   }
 }
 
+// Scrolls text on LCD screen if it is longer than 16 characters since LCD screen can only fit 16 chars
 void updateScrolling() {
   if (currentScreen != TRACK_SCREEN) return;
   if (millis() - trackDisplayStartTime < scrollStartDelay) return;
@@ -343,7 +350,7 @@ void handleButtons() {
   lastEncButtonState = currentEncButtonState;
 }
 
-// ---------------- Volume ----------------
+// Handles volume controls from rotary encoder
 void handleVolume() {
   int currentA = digitalRead(ENC_A_PIN);
 
@@ -371,7 +378,7 @@ void handleVolume() {
   lastEncAState = currentA;
 }
 
-// ---------------- Packet handlers ----------------
+// Parses display info from python script for display on LCD
 void handleDisplayPacket(const DisplayPacket& pkt) {
   String newTrack = String(pkt.track);
   String newArtist = String(pkt.artist);
@@ -401,7 +408,7 @@ void handleVolumePacket(const VolumePacket& pkt) {
   }
 }
 
-// ---------------- Direct-mode serial ----------------
+// Parses serial port line
 void handleSerialMessage(String line) {
   if (line.startsWith("LCD|")) {
     int firstSep = line.indexOf('|');
@@ -427,6 +434,7 @@ void handleSerialMessage(String line) {
   }
 }
 
+// Parses serial port 
 void readSerialDirectMode() {
   if (currentMode != MODE_DIRECT) return;
 
